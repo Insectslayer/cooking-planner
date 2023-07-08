@@ -1,0 +1,4 @@
+api_token: INTEGRATION_API_TOKEN
+notion_version: "2022-06-28"
+recipes_db_id: RECIPES_DB_ID
+master_ingredients_db_id: MASTER_INGREDIENTS_DB_ID
