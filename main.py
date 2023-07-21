@@ -92,9 +92,12 @@ def get_ingredients_of_recipe(recipe_page_id: str,
 
     shopping_list = {}
     for result in results:
-        i_name = result['properties']['Master Name']['rollup']['array'][0]['title'][0]['plain_text']
-        i_amount = result['properties']['Počet']['number']
-        i_unit = result['properties']['Jednotka']['rollup']['array'][0]['select']['name']
+        try:
+            i_name = result['properties']['Master Name']['rollup']['array'][0]['title'][0]['plain_text']
+            i_amount = result['properties']['Počet']['number']
+            i_unit = result['properties']['Jednotka']['rollup']['array'][0]['select']['name']
+        except IndexError:
+            print(f'Chyba v receptu {recipe_name}. Zkontrolujte, že každý řádek má přiřazenou ingredienci na pozici `Master Record`.')
         if i_name not in shopping_list:
             shopping_list[i_name] = [(i_amount, i_unit, recipe_name)]
         else:
@@ -121,8 +124,10 @@ def get_master_ingredients(master_ingredients_db_id: str, api_token: str, versio
 
     ingredient_types = {}
     for result in results:
-        type_name = result['properties']['Typ']['select']['name']
         ingredient_name = result['properties']['Jméno']['title'][0]['plain_text']
+        type_name = 'Nezařazeno'
+        if result['properties']['Typ']['select'] is not None:
+            type_name = result['properties']['Typ']['select']['name']
         if type_name not in ingredient_types:
             ingredient_types[type_name] = [ingredient_name]
         else:
@@ -221,6 +226,7 @@ if __name__ == '__main__':
 
     if args.price:
         update_prices(recipes_db_id, api_token, notion_version)
+    # update_prices(recipes_db_id, api_token, notion_version)
 
     if args.list is not None:
         start, end = args.list
