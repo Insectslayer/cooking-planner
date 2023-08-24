@@ -3,9 +3,10 @@ import json
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Dict, List, Tuple
+from datetime import datetime
 
 import yaml
-from requests import get, patch, post
+from requests import get, patch, post, ConnectionError
 
 ingredient_name = str
 amount = float
@@ -24,7 +25,10 @@ def read_yml_config(filename: str | Path) -> Dict:
         return config
 
 
-def fetch_results_from_db(db_id: str, api_token: str, version: str, query_filter: Dict = None) -> List:
+def fetch_results_from_db(db_id: str,
+                          api_token: str,
+                          version: str,
+                          query_filter: Dict = None) -> List:
     headers = {'Notion-Version': version,
                'Authorization': f'Bearer {api_token}'}
     results = []
@@ -37,6 +41,8 @@ def fetch_results_from_db(db_id: str, api_token: str, version: str, query_filter
                  headers=headers,
                  json=query_payload)
         output = json.loads(r.text)
+        if not r.ok:
+            raise ConnectionError(output['message'])
         results.extend(output['results'])
         if output['has_more']:
             query_payload['start_cursor'] = output['next_cursor']
@@ -50,6 +56,8 @@ def get_price_of_recipe(recipe_page_id: str, api_token: str, version: str) -> in
                'Authorization': f'Bearer {api_token}'}
     r = get(f'{BASE_URL}/v1/blocks/{recipe_page_id}/children', headers=headers)
     recipe_page = json.loads(r.text)
+    if not r.ok:
+        raise ConnectionError(recipe_page['message'])
     ingredients_db_id = recipe_page['results'][0]['id']
 
     results = fetch_results_from_db(ingredients_db_id, api_token, version)
@@ -86,6 +94,8 @@ def get_ingredients_of_recipe(recipe_page_id: str,
                'Authorization': f'Bearer {api_token}'}
     r = get(f'{BASE_URL}/v1/blocks/{recipe_page_id}/children', headers=headers)
     recipe_page = json.loads(r.text)
+    if not r.ok:
+        raise ConnectionError(recipe_page['message'])
     ingredients_db_id = recipe_page['results'][0]['id']
 
     results = fetch_results_from_db(ingredients_db_id, api_token, version)
@@ -97,7 +107,8 @@ def get_ingredients_of_recipe(recipe_page_id: str,
             i_amount = result['properties']['Počet']['number']
             i_unit = result['properties']['Jednotka']['rollup']['array'][0]['select']['name']
         except IndexError:
-            print(f'Chyba v receptu {recipe_name}. Zkontrolujte, že každý řádek má přiřazenou ingredienci na pozici `Master Record`.')
+            raise RuntimeError(
+                f'Chyba v receptu {recipe_name}. Zkontrolujte, zda má každý řádek přiřazenou ingredienci na pozici `Master Record`.')
         if i_name not in shopping_list:
             shopping_list[i_name] = [(i_amount, i_unit, recipe_name)]
         else:
@@ -115,7 +126,9 @@ def add_recipe_to_list(shopping_list: Dict[ingredient_name, List[Tuple[amount, u
             shopping_list[item].extend(recipe_list[item])
 
 
-def get_master_ingredients(master_ingredients_db_id: str, api_token: str, version: str) -> Dict[str, List[ingredient_name]]:
+def get_master_ingredients(master_ingredients_db_id: str,
+                           api_token: str,
+                           version: str) -> Dict[str, List[ingredient_name]]:
     '''
     returns {'Trvanlivé': ['Fazole',...],...}
     '''
@@ -143,13 +156,18 @@ def write_ingredient_type_to_csv(writer,
     writer.writerow([ingredient_type])
     for ingredient in ingredients:
         if ingredient in shopping_list:
-            for i, item in enumerate(shopping_list[ingredient]):
-                if i == 0:
-                    line = [ingredient]
-                else:
-                    line = ['']
+            print(f'Zapisuji: {ingredient}.')
+            rows = []
+            total = 0
+            ingredient_unit = ''
+            for item in shopping_list[ingredient]:
+                line = ['']
                 line.extend(item)
-                writer.writerow(line)
+                rows.append(line)
+                total += item[0]
+                ingredient_unit = item[1]
+            writer.writerow([ingredient, f'{total:.2f}', ingredient_unit])
+            writer.writerows(rows)
 
 
 def save_list_to_csv(filename: str,
@@ -158,7 +176,7 @@ def save_list_to_csv(filename: str,
                      api_token: str,
                      version: str) -> None:
     with open(filename, 'w', newline='', encoding='utf-8') as f:
-        f.write('\ufeff')
+        f.write('\ufeff')  # Change encoding to utf-8 with BOM for Excel.
         writer = csv.writer(f, delimiter=',')
         ingredient_types = get_master_ingredients(
             master_ingredients_db_id, api_token, version)
@@ -173,20 +191,31 @@ def create_shopping_list(recipes_db_id: str,
                          version: str,
                          start: str,
                          end: str) -> None:
-    date_filter = {
-        "property": "Datum",
-        "date": {
-            "on_or_after": start,
-            "on_or_before": end
-        }
-    }
+    # date_filter = {
+    #     "property": "Datum",
+    #     "date": {
+    #         "on_or_after": start,
+    #         "on_or_before": end
+    #     }
+    # }
     results = fetch_results_from_db(
-        recipes_db_id, api_token, version, date_filter)
+        recipes_db_id, api_token, version)
+
+    start_date = datetime.fromisoformat(start)
+    end_date = datetime.fromisoformat(end)
 
     shopping_list = {}
     for result in results:
+        recipe_date = datetime.fromisoformat(
+            result["properties"]["Datum"]["date"]["start"])
+        if not start_date <= recipe_date <= end_date:
+            continue
         page_id = result['id']
         recipe_name = result['properties']['Jméno']['title'][0]['plain_text']
+
+        print(
+            f'Zpracovávám recept: {recipe_name} z data {result["properties"]["Datum"]["date"]["start"]}.')
+
         recipe_list = get_ingredients_of_recipe(
             page_id, api_token, version, recipe_name)
         add_recipe_to_list(shopping_list, recipe_list)
@@ -226,7 +255,6 @@ if __name__ == '__main__':
 
     if args.price:
         update_prices(recipes_db_id, api_token, notion_version)
-    # update_prices(recipes_db_id, api_token, notion_version)
 
     if args.list is not None:
         start, end = args.list
