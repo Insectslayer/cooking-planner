@@ -3,6 +3,8 @@ import json
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Dict, List, Tuple
+from unidecode import unidecode
+
 
 import yaml
 from requests import get, patch, post
@@ -11,6 +13,7 @@ ingredient_name = str
 amount = float
 unit = str
 recipe_name = str
+unit_price = float
 
 BASE_URL = 'https://api.notion.com'
 
@@ -36,7 +39,11 @@ def fetch_results_from_db(db_id: str, api_token: str, version: str, query_filter
         r = post(f'{BASE_URL}/v1/databases/{db_id}/query',
                  headers=headers,
                  json=query_payload)
-        output = json.loads(r.text)
+        if r.ok:
+            output = json.loads(r.text)
+        else:
+            raise RuntimeError(
+                f'{r.reason}\nJe připojená kuchyňská integrace ke správné databázi?')
         results.extend(output['results'])
         if output['has_more']:
             query_payload['start_cursor'] = output['next_cursor']
@@ -69,7 +76,14 @@ def update_prices(recipes_db_id: str, api_token: str, version: str) -> None:
 
     for result in results:
         page_id = result['id']
-        price = get_price_of_recipe(page_id, api_token, version)
+        recipe_name = result['properties']['Jméno']['title'][0]['text']['content']
+        print(f'Zpracovávám recept: {recipe_name}')
+        try:
+            price = get_price_of_recipe(page_id, api_token, version)
+        except Exception:
+            raise RuntimeError(
+                f'Recept "{recipe_name}" selhal. Zkontroluj, že je správně zapsaný.')
+
         payload_data = {'properties': {'Cena': {'number': price}}}
         r = patch(f'{BASE_URL}/v1/pages/{page_id}',
                   headers=headers, json=payload_data)
@@ -78,7 +92,7 @@ def update_prices(recipes_db_id: str, api_token: str, version: str) -> None:
 def get_ingredients_of_recipe(recipe_page_id: str,
                               api_token: str,
                               version: str,
-                              recipe_name: recipe_name) -> Dict[ingredient_name, List[Tuple[amount, unit, recipe_name]]]:
+                              recipe_name: recipe_name) -> Dict[ingredient_name, List[Tuple[amount, unit, recipe_name, unit_price]]]:
     '''
     returns: {'Ovoce':[(2.5, 'kg', 'Svačina')], ...}
     '''
@@ -92,22 +106,31 @@ def get_ingredients_of_recipe(recipe_page_id: str,
 
     shopping_list = {}
     for result in results:
+        i_name = ''
+        i_amount = 0
+        i_unit = ''
+        i_unit_price = 0
         try:
             i_name = result['properties']['Master Name']['rollup']['array'][0]['title'][0]['plain_text']
             i_amount = result['properties']['Počet']['number']
             i_unit = result['properties']['Jednotka']['rollup']['array'][0]['select']['name']
+            i_unit_price = result['properties']['Jednotková cena']['rollup']['array'][0]['number']
         except IndexError:
-            print(f'Chyba v receptu {recipe_name}. Zkontrolujte, že každý řádek má přiřazenou ingredienci na pozici `Master Record`.')
+            print(
+                f'Chyba v receptu {recipe_name}. Zkontrolujte, že každý řádek má přiřazenou ingredienci na pozici `Master Record`.')
         if i_name not in shopping_list:
-            shopping_list[i_name] = [(i_amount, i_unit, recipe_name)]
+            shopping_list[i_name] = [
+                (i_amount, i_unit, recipe_name, i_unit_price)]
         else:
-            shopping_list[i_name].append((i_amount, i_unit, recipe_name))
+            shopping_list[i_name].append(
+                (i_amount, i_unit, recipe_name, i_unit_price))
+        print(f'Recept: {recipe_name}, Ingeredience: {i_name}')
 
     return shopping_list
 
 
-def add_recipe_to_list(shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name]]],
-                       recipe_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name]]]) -> None:
+def add_recipe_to_list(shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name, unit_price]]],
+                       recipe_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name, unit_price]]]) -> None:
     for item in recipe_list:
         if item not in shopping_list:
             shopping_list[item] = recipe_list[item]
@@ -137,23 +160,26 @@ def get_master_ingredients(master_ingredients_db_id: str, api_token: str, versio
 
 
 def write_ingredient_type_to_csv(writer,
-                                 shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name]]],
+                                 shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name, unit_price]]],
                                  ingredient_type: str,
                                  ingredients: List[ingredient_name]):
+    ingredients.sort(key=unidecode)
     writer.writerow([ingredient_type])
     for ingredient in ingredients:
         if ingredient in shopping_list:
+            amount = 0
+            for item in shopping_list[ingredient]:
+                amount += item[0]
+            writer.writerow(
+                [ingredient, amount, shopping_list[ingredient][0][1]])
             for i, item in enumerate(shopping_list[ingredient]):
-                if i == 0:
-                    line = [ingredient]
-                else:
-                    line = ['']
+                line = ['']
                 line.extend(item)
                 writer.writerow(line)
 
 
 def save_list_to_csv(filename: str,
-                     shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name]]],
+                     shopping_list: Dict[ingredient_name, List[Tuple[amount, unit, recipe_name, unit_price]]],
                      master_ingredients_db_id: str,
                      api_token: str,
                      version: str) -> None:
@@ -232,3 +258,5 @@ if __name__ == '__main__':
         start, end = args.list
         create_shopping_list(recipes_db_id, master_ingredients_db_id,
                              api_token, notion_version, start, end)
+    # create_shopping_list(recipes_db_id, master_ingredients_db_id,
+    #                      api_token, notion_version, '2024-07-12', '2024-07-13')
