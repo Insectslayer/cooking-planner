@@ -252,11 +252,8 @@ if __name__ == '__main__':
 
     if args.price:
         update_prices(recipes_db_id, api_token, notion_version)
-    # update_prices(recipes_db_id, api_token, notion_version)
 
     if args.list is not None:
         start, end = args.list
         create_shopping_list(recipes_db_id, master_ingredients_db_id,
                              api_token, notion_version, start, end)
-    # create_shopping_list(recipes_db_id, master_ingredients_db_id,
-    #                      api_token, notion_version, '2024-07-12', '2024-07-13')
